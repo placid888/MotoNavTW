@@ -28,9 +28,10 @@ add_library(
 )
 
 # 告訴編譯器去哪裡找 C++ 的 Header 檔 (.hpp)
-# 這讓原作者的 #include <ble_protocol/ble_protocol.hpp> 可以正確運作
+# 加入了 shared/ble_protocol/include，讓編譯器能精準對應到 #include "moto/ble_protocol/..."
 target_include_directories(motonavtw PRIVATE
         shared
+        shared/ble_protocol/include
 )
 
 # 連結 Android 內建的 Log 程式庫 (為了我們後續可以用 __android_log_print 輸出日誌)
