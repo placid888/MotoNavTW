@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # 設定要編譯的 shared 目錄下的原始碼
 # (初期我們先編譯藍牙協定相關的核心檔案)
 set(SHARED_SRC
-        shared/ble_protocol/ble_protocol.cpp
+        shared/ble_protocol/src/ble_protocol.cpp
 )
 
 # 建立我們要編譯的共享程式庫 (Library)
