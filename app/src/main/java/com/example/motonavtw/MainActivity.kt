@@ -3,12 +3,14 @@ package com.example.motonavtw
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,11 +28,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
             val allGranted = permissions.entries.all { it.value }
             if (allGranted) {
-                Log.d("MotoNavTW", "權限取得成功！啟動藍牙與 GPS...")
-                bleManager.startScan()
-                startGpsTracking()
+                Log.d("MotoNavTW", "權限取得成功！")
+                initializeServices()
             } else {
-                Toast.makeText(this, "需要藍牙與定位權限才能執行機車導航！", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "需要藍牙與定位權限才能完整體驗機車儀表板！", Toast.LENGTH_LONG).show()
             }
         }
 
@@ -39,14 +40,74 @@ class MainActivity : AppCompatActivity(), LocationListener {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 1. 初始化藍牙與定位管理員
         bleManager = BleManager(this)
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-        binding.sampleText.text = "MotoNavTW 啟動中...\n等待權限與 GPS 訊號..."
+        // 初始化介面狀態
+        binding.txtSpeed.text = "0"
+        binding.txtRoadName.text = "等待定位..."
+        binding.txtBleStatus.text = "🔵 藍牙：準備中"
+        binding.txtGpsStatus.text = "🛰️ GPS：準備中"
+        binding.txtHexDebug.text = "BLE Hex: 尚無數據"
+        binding.txtTurnDistance.text = "前方 0 公尺"
+        binding.txtTurnInstruction.text = "等待導航中"
+        binding.txtTurnIcon.text = "⬆️"
+        binding.txtMediaTitle.text = "🎵 來源：未選擇 (播放中)"
 
-        // 2. 檢查並請求所有必要權限 (包含藍牙與 GPS)
+        setupSwitches()
+        setupMediaButtons()
         checkAndRequestPermissions()
+        checkNotificationPermission()
+
+        // 監聽背景多媒體切換 (來源, 標題, 作者)
+        MediaNotificationListener.onSongChangedListener = { source, title, artist ->
+            runOnUiThread {
+                val displayText = if (artist.isNotEmpty()) "[$source] $artist - $title" else "[$source] $title"
+                binding.txtMediaTitle.text = "🎵 $displayText"
+            }
+        }
+    }
+
+    private fun setupSwitches() {
+        binding.switchGps.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                startGpsTracking()
+                Toast.makeText(this, "已開啟 GPS 追蹤", Toast.LENGTH_SHORT).show()
+            } else {
+                stopGpsTracking()
+                binding.txtGpsStatus.text = "🛰️ GPS：已關閉"
+                Toast.makeText(this, "已關閉 GPS 追蹤", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        binding.switchBle.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                bleManager.startScan()
+                binding.txtBleStatus.text = "🔵 藍牙：掃描中..."
+                Toast.makeText(this, "已開啟 BLE 發射", Toast.LENGTH_SHORT).show()
+            } else {
+                bleManager.stopScan()
+                binding.txtBleStatus.text = "🔵 藍牙：已關閉"
+                Toast.makeText(this, "已暫停 BLE 發射", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun setupMediaButtons() {
+        binding.btnPrev.setOnClickListener {
+            MediaNotificationListener.skipToPrevious()
+            Toast.makeText(this, "切換至上一首/上一頁", Toast.LENGTH_SHORT).show()
+        }
+
+        binding.btnPlayPause.setOnClickListener {
+            MediaNotificationListener.togglePlayPause()
+            Toast.makeText(this, "切換 播放/暫停", Toast.LENGTH_SHORT).show()
+        }
+
+        binding.btnNext.setOnClickListener {
+            MediaNotificationListener.skipToNext()
+            Toast.makeText(this, "切換至下一首/下一頁", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun checkAndRequestPermissions() {
@@ -64,57 +125,97 @@ class MainActivity : AppCompatActivity(), LocationListener {
         }
 
         if (missingPermissions.isEmpty()) {
-            Log.d("MotoNavTW", "所有權限已具備，啟動服務...")
-            bleManager.startScan()
-            startGpsTracking()
+            initializeServices()
         } else {
             requestPermissionLauncher.launch(missingPermissions.toTypedArray())
+        }
+    }
+
+    private fun checkNotificationPermission() {
+        val cn = android.content.ComponentName(this, MediaNotificationListener::class.java)
+        val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
+        val enabled = flat != null && flat.contains(cn.flattenToString())
+
+        if (!enabled) {
+            Toast.makeText(this, "請授權 MotoNavTW 讀取通知以同步播放源！", Toast.LENGTH_LONG).show()
+            val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+            startActivity(intent)
+        }
+    }
+
+    private fun initializeServices() {
+        if (binding.switchBle.isChecked) {
+            bleManager.startScan()
+            binding.txtBleStatus.text = "🔵 藍牙：掃描中..."
+        }
+        if (binding.switchGps.isChecked) {
+            startGpsTracking()
+            binding.txtGpsStatus.text = "🛰️ GPS：監聽中"
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun startGpsTracking() {
         if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            // 每隔 1 秒或移動 1 公尺更新一次 GPS 數據
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                1000L,
-                1f,
-                this
-            )
-            Log.d("MotoNavTW", "已開始監聽 GPS 衛星時速...")
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, this)
+            binding.txtGpsStatus.text = "🛰️ GPS：運行中"
         } else {
             Toast.makeText(this, "請先開啟手機的 GPS 定位服務！", Toast.LENGTH_LONG).show()
+            binding.txtGpsStatus.text = "🛰️ GPS：未開啟定位"
         }
     }
 
-    // --- 當 GPS 衛星回傳最新位置與速度時觸發 ---
+    private fun stopGpsTracking() {
+        locationManager.removeUpdates(this)
+    }
+
     override fun onLocationChanged(location: Location) {
-        // location.speed 單位是「公尺/秒 (m/s)」，我們把它換算成「公里/小時 (km/h)」
+        if (!binding.switchGps.isChecked) return
+
         val speedKph = (location.speed * 3.6).toInt()
-        val roadName = "即時導航路段" // 後續我們可以對接地圖 API 取得真實路名
+        val roadName = "忠孝東路四段"
+        val turnType = 2
+        val distanceMeters = 150
 
-        Log.d("MotoNavTW", "收到真實 GPS 時速: $speedKph km/h")
+        updateTurnUi(turnType, distanceMeters)
 
-        // 1. 透過 C++ 引擎將時速與路名打包成 BLE 專屬二進位封包
-        val blePacket = encodeNavigationSnapshot(speedKph, roadName)
+        val blePacket = encodeNavigationSnapshot(speedKph, roadName, turnType, distanceMeters)
         val hexString = blePacket.joinToString("") { "%02x".format(it) }
 
-        // 2. 更新手機畫面顯示
-        binding.sampleText.text = "GPS 即時同步中 🏍️\n當前時速: $speedKph km/h\n\nBLE 封包:\n$hexString"
+        binding.txtSpeed.text = "$speedKph"
+        binding.txtRoadName.text = roadName
+        binding.txtHexDebug.text = "BLE Hex: $hexString"
 
-        // 3. 透過藍牙發射器把封包射給 ESP32 儀表板
-        bleManager.sendNavigationData(blePacket)
+        if (binding.switchBle.isChecked) {
+            bleManager.sendNavigationData(blePacket)
+        }
+    }
+
+    private fun updateTurnUi(turnType: Int, distance: Int) {
+        binding.txtTurnDistance.text = "前方 $distance 公尺"
+        when (turnType) {
+            1 -> {
+                binding.txtTurnIcon.text = "⬅️"
+                binding.txtTurnInstruction.text = "準備向左轉"
+            }
+            2 -> {
+                binding.txtTurnIcon.text = "➡️"
+                binding.txtTurnInstruction.text = "準備向右轉"
+            }
+            else -> {
+                binding.txtTurnIcon.text = "⬆️"
+                binding.txtTurnInstruction.text = "請繼續直行"
+            }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        locationManager.removeUpdates(this)
+        stopGpsTracking()
         bleManager.stopScan()
     }
 
-    // --- C++ JNI 外部函數宣告 ---
-    external fun encodeNavigationSnapshot(speedKph: Int, roadName: String): ByteArray
+    external fun encodeNavigationSnapshot(speedKph: Int, roadName: String, turnType: Int, distanceMeters: Int): ByteArray
 
     companion object {
         init {
