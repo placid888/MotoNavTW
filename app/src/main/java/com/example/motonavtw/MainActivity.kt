@@ -1,225 +1,271 @@
-package com.example.motonavtw
+package com.motonavtw
 
 import android.Manifest
-import android.annotation.SuppressLint
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
-import android.util.Log
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
-import com.example.motonavtw.databinding.ActivityMainBinding
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.motonavtw.ble.BleManager
+import com.motonavtw.data.GatewayManager
+import kotlinx.coroutines.launch
 
-class MainActivity : AppCompatActivity(), LocationListener {
+class MainActivity : ComponentActivity() {
 
-    private lateinit var binding: ActivityMainBinding
     private lateinit var bleManager: BleManager
-    private lateinit var locationManager: LocationManager
-
-    private val requestPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-            val allGranted = permissions.entries.all { it.value }
-            if (allGranted) {
-                Log.d("MotoNavTW", "權限取得成功！")
-                initializeServices()
-            } else {
-                Toast.makeText(this, "需要藍牙與定位權限才能完整體驗機車儀表板！", Toast.LENGTH_LONG).show()
-            }
-        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
 
         bleManager = BleManager(this)
-        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-        // 初始化介面狀態
-        binding.txtSpeed.text = "0"
-        binding.txtRoadName.text = "等待定位..."
-        binding.txtBleStatus.text = "🔵 藍牙：準備中"
-        binding.txtGpsStatus.text = "🛰️ GPS：準備中"
-        binding.txtHexDebug.text = "BLE Hex: 尚無數據"
-        binding.txtTurnDistance.text = "前方 0 公尺"
-        binding.txtTurnInstruction.text = "等待導航中"
-        binding.txtTurnIcon.text = "⬆️"
-        binding.txtMediaTitle.text = "🎵 來源：未選擇 (播放中)"
+        setContent {
+            MaterialTheme {
+                val connectionState by bleManager.connectionState.collectAsState()
 
-        setupSwitches()
-        setupMediaButtons()
-        checkAndRequestPermissions()
-        checkNotificationPermission()
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestMultiplePermissions()
+                ) { permissions ->
+                    val allGranted = permissions.entries.all { it.value }
+                    if (allGranted) {
+                        bleManager.startScan()
+                    } else {
+                        Toast.makeText(this@MainActivity, "需授權藍牙與定位權限", Toast.LENGTH_SHORT).show()
+                    }
+                }
 
-        // 監聽背景多媒體切換 (來源, 標題, 作者)
-        MediaNotificationListener.onSongChangedListener = { source, title, artist ->
-            runOnUiThread {
-                val displayText = if (artist.isNotEmpty()) "[$source] $artist - $title" else "[$source] $title"
-                binding.txtMediaTitle.text = "🎵 $displayText"
-            }
-        }
-    }
-
-    private fun setupSwitches() {
-        binding.switchGps.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked) {
-                startGpsTracking()
-                Toast.makeText(this, "已開啟 GPS 追蹤", Toast.LENGTH_SHORT).show()
-            } else {
-                stopGpsTracking()
-                binding.txtGpsStatus.text = "🛰️ GPS：已關閉"
-                Toast.makeText(this, "已關閉 GPS 追蹤", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        binding.switchBle.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked) {
-                bleManager.startScan()
-                binding.txtBleStatus.text = "🔵 藍牙：掃描中..."
-                Toast.makeText(this, "已開啟 BLE 發射", Toast.LENGTH_SHORT).show()
-            } else {
-                bleManager.stopScan()
-                binding.txtBleStatus.text = "🔵 藍牙：已關閉"
-                Toast.makeText(this, "已暫停 BLE 發射", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun setupMediaButtons() {
-        binding.btnPrev.setOnClickListener {
-            MediaNotificationListener.skipToPrevious()
-            Toast.makeText(this, "切換至上一首/上一頁", Toast.LENGTH_SHORT).show()
-        }
-
-        binding.btnPlayPause.setOnClickListener {
-            MediaNotificationListener.togglePlayPause()
-            Toast.makeText(this, "切換 播放/暫停", Toast.LENGTH_SHORT).show()
-        }
-
-        binding.btnNext.setOnClickListener {
-            MediaNotificationListener.skipToNext()
-            Toast.makeText(this, "切換至下一首/下一頁", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun checkAndRequestPermissions() {
-        val requiredPermissions = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            requiredPermissions.add(Manifest.permission.BLUETOOTH_SCAN)
-            requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-        }
-
-        val missingPermissions = requiredPermissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (missingPermissions.isEmpty()) {
-            initializeServices()
-        } else {
-            requestPermissionLauncher.launch(missingPermissions.toTypedArray())
-        }
-    }
-
-    private fun checkNotificationPermission() {
-        val cn = android.content.ComponentName(this, MediaNotificationListener::class.java)
-        val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
-        val enabled = flat != null && flat.contains(cn.flattenToString())
-
-        if (!enabled) {
-            Toast.makeText(this, "請授權 MotoNavTW 讀取通知以同步播放源！", Toast.LENGTH_LONG).show()
-            val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-            startActivity(intent)
-        }
-    }
-
-    private fun initializeServices() {
-        if (binding.switchBle.isChecked) {
-            bleManager.startScan()
-            binding.txtBleStatus.text = "🔵 藍牙：掃描中..."
-        }
-        if (binding.switchGps.isChecked) {
-            startGpsTracking()
-            binding.txtGpsStatus.text = "🛰️ GPS：監聽中"
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun startGpsTracking() {
-        if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, this)
-            binding.txtGpsStatus.text = "🛰️ GPS：運行中"
-        } else {
-            Toast.makeText(this, "請先開啟手機的 GPS 定位服務！", Toast.LENGTH_LONG).show()
-            binding.txtGpsStatus.text = "🛰️ GPS：未開啟定位"
-        }
-    }
-
-    private fun stopGpsTracking() {
-        locationManager.removeUpdates(this)
-    }
-
-    override fun onLocationChanged(location: Location) {
-        if (!binding.switchGps.isChecked) return
-
-        val speedKph = (location.speed * 3.6).toInt()
-        val roadName = "忠孝東路四段"
-        val turnType = 2
-        val distanceMeters = 150
-
-        updateTurnUi(turnType, distanceMeters)
-
-        val blePacket = encodeNavigationSnapshot(speedKph, roadName, turnType, distanceMeters)
-        val hexString = blePacket.joinToString("") { "%02x".format(it) }
-
-        binding.txtSpeed.text = "$speedKph"
-        binding.txtRoadName.text = roadName
-        binding.txtHexDebug.text = "BLE Hex: $hexString"
-
-        if (binding.switchBle.isChecked) {
-            bleManager.sendNavigationData(blePacket)
-        }
-    }
-
-    private fun updateTurnUi(turnType: Int, distance: Int) {
-        binding.txtTurnDistance.text = "前方 $distance 公尺"
-        when (turnType) {
-            1 -> {
-                binding.txtTurnIcon.text = "⬅️"
-                binding.txtTurnInstruction.text = "準備向左轉"
-            }
-            2 -> {
-                binding.txtTurnIcon.text = "➡️"
-                binding.txtTurnInstruction.text = "準備向右轉"
-            }
-            else -> {
-                binding.txtTurnIcon.text = "⬆️"
-                binding.txtTurnInstruction.text = "請繼續直行"
+                MotoNavApp(
+                    connectionState = connectionState,
+                    onConnectClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            permissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.BLUETOOTH_SCAN,
+                                    Manifest.permission.BLUETOOTH_CONNECT,
+                                    Manifest.permission.ACCESS_FINE_LOCATION
+                                )
+                            )
+                        } else {
+                            permissionLauncher.launch(
+                                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                            )
+                        }
+                    }
+                )
             }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopGpsTracking()
-        bleManager.stopScan()
+        bleManager.closeGatt()
+    }
+}
+
+@Composable
+fun MotoNavApp(connectionState: String, onConnectClick: () -> Unit) {
+    val navController = rememberNavController()
+    val context = LocalContext.current
+    val gatewayManager = remember { GatewayManager(context) }
+    val gatewayUrl by gatewayManager.gatewayUrlFlow.collectAsState(initial = "")
+    val coroutineScope = rememberCoroutineScope()
+
+    var showGatewayDialog by remember { mutableStateOf(false) }
+    var tempUrlInput by remember { mutableStateOf("") }
+
+    // 檢查網關是否為空
+    LaunchedEffect(gatewayUrl) {
+        if (gatewayUrl.isEmpty()) {
+            showGatewayDialog = true
+        }
     }
 
-    external fun encodeNavigationSnapshot(speedKph: Int, roadName: String, turnType: Int, distanceMeters: Int): ByteArray
+    if (showGatewayDialog) {
+        AlertDialog(
+            onDismissRequest = { /* 強制設定，不允許點擊外部關閉 */ },
+            title = { Text("設定導航網關") },
+            text = {
+                OutlinedTextField(
+                    value = tempUrlInput,
+                    onValueChange = { tempUrlInput = it },
+                    label = { Text("伺服器 URL") },
+                    placeholder = { Text("例如: http://192.168.1.100:8080") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (tempUrlInput.isNotBlank()) {
+                            coroutineScope.launch {
+                                gatewayManager.saveGatewayUrl(tempUrlInput)
+                                showGatewayDialog = false
+                            }
+                        }
+                    }
+                ) {
+                    Text("儲存")
+                }
+            }
+        )
+    }
 
-    companion object {
-        init {
-            System.loadLibrary("motonavtw")
+    NavHost(navController = navController, startDestination = "home") {
+        composable("home") {
+            HomeScreen(
+                connectionState = connectionState,
+                recentLocations = listOf("台北市大安區", "新北市板橋區"),
+                gatewayUrl = gatewayUrl,
+                onSearchClick = {
+                    if (gatewayUrl.isEmpty()) showGatewayDialog = true
+                    // TODO: 執行 HTTP 搜尋請求
+                },
+                onLocationSelect = { loc -> /* TODO: 使用該地點規劃路線 */ },
+                onNavigateToOfflineMaps = { /* TODO: 跳轉地圖下載頁 */ },
+                onStartDemo = { navController.navigate("nav_preview") },
+                onConfigGateway = {
+                    tempUrlInput = gatewayUrl
+                    showGatewayDialog = true
+                },
+                onConnectClick = onConnectClick
+            )
+        }
+
+        composable("nav_preview") {
+            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = null,
+                        modifier = Modifier.size(100.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "導航運作中",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "目前以無藍牙硬體模式運行\nHTTP 請求與坐標轉換邏輯測試中...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HomeScreen(
+    connectionState: String,
+    recentLocations: List<String>,
+    gatewayUrl: String,
+    onSearchClick: () -> Unit,
+    onLocationSelect: (String) -> Unit,
+    onNavigateToOfflineMaps: () -> Unit,
+    onStartDemo: () -> Unit,
+    onConfigGateway: () -> Unit,
+    onConnectClick: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("MOTO GPS") },
+                actions = {
+                    AssistChip(
+                        onClick = onConnectClick,
+                        label = { Text(connectionState) },
+                        leadingIcon = { Icon(Icons.Default.Build, null, Modifier.size(16.dp)) },
+                        modifier = Modifier.padding(end = 16.dp)
+                    )
+                }
+            )
+        }
+    ) { paddingValues ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(paddingValues)
+        ) {
+            item {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                        .clickable { onSearchClick() },
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Search, null)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Text("輸入城市和地點...")
+                    }
+                }
+            }
+
+            if (recentLocations.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "最近地點",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                }
+                items(recentLocations) { location ->
+                    ListItem(
+                        headlineContent = { Text(location) },
+                        leadingContent = { Icon(Icons.Default.Place, null) },
+                        modifier = Modifier.clickable { onLocationSelect(location) }
+                    )
+                }
+            }
+
+            item { HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp)) }
+
+            item {
+                ListItem(
+                    headlineContent = { Text("網關設定") },
+                    supportingContent = { Text(gatewayUrl.ifEmpty { "尚未配置" }) },
+                    leadingContent = { Icon(Icons.Default.Settings, null) },
+                    modifier = Modifier.clickable { onConfigGateway() }
+                )
+            }
+
+            item {
+                ListItem(
+                    headlineContent = { Text("演示導航 (免硬體)") },
+                    supportingContent = { Text("執行固定路線模擬邏輯") },
+                    leadingContent = { Icon(Icons.Default.PlayArrow, null) },
+                    modifier = Modifier.clickable { onStartDemo() }
+                )
+            }
         }
     }
 }
