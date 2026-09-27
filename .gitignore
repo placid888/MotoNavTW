@@ -1,0 +1,62 @@
+# ==================================
+# 1. Android Studio / Gradle 基礎配置
+# ==================================
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# ==================================
+# 2. App 模組建置輸出
+# ==================================
+/app/build/
+/app/.cxx/
+
+# ==================================
+# 3. Native C++ (CMake / JNI) 專屬排除
+# ==================================
+# 排除 CMake 產生的龐大快取與編譯設定
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Testing
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# 排除編譯出來的 SO 函式庫與 OBJ 中介檔 (應該只推源碼，不推編譯結果)
+*.so
+*.a
+*.o
+*.obj
+
+# 排除可能產生的舊版 ESP/ESP-IDF 相關設定 (如果之後有借用硬體端工具)
+sdkconfig
+sdkconfig.old
+.clangd/
+
+# ==================================
+# 4. 資源檔防護 (避免誤推巨大的圖資或資料庫)
+# ==================================
+# 台灣 OSM 圖資包或快取
+*.mbtiles
+*.pbf
+
+# 開發測試用的巨大 GPX 軌跡檔 (可依需求開關)
+# *.gpx
+
+# 下載的測速照相暫存資料庫
+*.sqlite
+*.db
